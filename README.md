@@ -52,6 +52,10 @@ You can use either the Input Number or GUID with no change to the code.
 - Make any changes necessary in the config.h file (Vmix Machine IP, WiFi Credentials, etc.)
 - Upload to your Board!
 
+## Default Wiring Diagram
+
+![Wiring Diagram](https://github.com/Dilagante/vmix2ESPTally/blob/master/Tally_Client_Schematic_v2.png)
+
 ## What's next?
 
 - ESP32 Support (May work, currently untested)
