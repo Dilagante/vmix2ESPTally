@@ -44,7 +44,7 @@ You can use either the Input Number or GUID with no change to the code.
 
 - Clone the repo on your Machine with;
 ```bash
-  git clone 
+  git clone https://github.com/Dilagante/vmix2ESPTally
 ```
     
 - Connect your ESP8266 Board over USB
