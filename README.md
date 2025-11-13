@@ -1,4 +1,5 @@
-
+  ## Note: There is an updated version of the Tally that supports changing the Vmix source IP and GUID via a Web UI, negating the need for reflashing. This can be found in the WebUI branch. Until I can write a proper Readme, the same readme will be used for both branches.
+  
 # VmixToESPTally
 
 A simple firmware for ESP8266 Boards to make a portable Tally Light System!
