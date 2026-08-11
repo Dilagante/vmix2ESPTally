@@ -2,62 +2,83 @@
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <EEPROM.h>
+#include "config.h"
 
-// WiFi Credentials
-const char* ssid = "";
-const char* password = "";
-
-
-// Static IP Configuration - Comment out for DHCP with Line 48
-IPAddress staticIP(192, 168, 1, 100);
-IPAddress gateway(192, 168, 1, 1);
-IPAddress subnet(255, 255, 255, 0);
-
+// Runtime Variables (Loaded from EEPROM)
+String wifi_ssid = "";
+String wifi_pass = "";
+String vmix_ip = "";
+String guid = "";
 
 // Web server
 ESP8266WebServer server(80);
 
-// LED Pins
-const int redPin   = 5;
-const int greenPin = 4;
-const int bluePin  = 0;
-
-String vmix_ip;
-String guid;
-
-//CHANGE IF YOU DON'T USE DEFAULT VMIX COLOURS
-const char* PrvColor = "#ff8c00";
-const char* PgmColor = "#ff0000";
-
-// EEPROM Addresses
-#define EEPROM_SIZE 100
-#define VMIX_IP_ADDR 0
-#define GUID_ADDR 40
-
 unsigned long lastRequestTime = 0;
-const unsigned long requestInterval = 300; // Check vMix tally every 300ms
+const unsigned long requestInterval = 300; 
+bool isAPMode = false;
+
+// --- Device States ---
+enum TallyState {
+  STATE_BOOTING,
+  STATE_AP_MODE,
+  STATE_NO_VMIX,
+  STATE_OFF_AIR,
+  STATE_PREVIEW,
+  STATE_PROGRAM
+};
+
+TallyState currentState = STATE_BOOTING;
 
 void setup() {
   Serial.begin(115200);
 
-  // Start EEPROM
+  // Set standard PWM range for ESP8266 (0-255)
+  analogWriteRange(255);
+
+  // Initialize EEPROM and Load Config
   EEPROM.begin(EEPROM_SIZE);
   loadConfig();
 
-  // WiFi Setup with Static IP
-  WiFi.config(staticIP, gateway, subnet);
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
+  // Setup LED Pins
+  pinMode(RED_PIN, OUTPUT);
+  pinMode(GREEN_PIN, OUTPUT);
+  pinMode(BLUE_PIN, OUTPUT);
+  
+  currentState = STATE_BOOTING;
 
-  // LED Setup
-  pinMode(redPin, OUTPUT);
-  pinMode(greenPin, OUTPUT);
-  pinMode(bluePin, OUTPUT);
+  // Attempt to connect to WiFi
+  WiFi.mode(WIFI_STA);
+  if (wifi_ssid.length() > 0) {
+    WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+    Serial.print("Connecting to WiFi: ");
+    Serial.println(wifi_ssid);
+    
+    // Wait up to 10 seconds for connection, but keep animating LEDs
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 200) {
+      updateLEDs(); // Keep the fade animation running
+      delay(50);    // Small delay prevents hardware watchdog reset while keeping fade smooth
+      if (attempts % 10 == 0) Serial.print(".");
+      attempts++;
+    }
+  }
+
+  // Fallback to AP Mode if connection failed or no SSID is set
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nWiFi Failed! Starting Access Point Mode.");
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(AP_SSID, AP_PASS);
+    Serial.print("Connect to AP: ");
+    Serial.println(AP_SSID);
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.softAPIP());
+    isAPMode = true;
+    currentState = STATE_AP_MODE;
+  } else {
+    Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
+    // Default to NO_VMIX until we get our first successful HTTP response
+    currentState = STATE_NO_VMIX; 
+  }
 
   // Web Server Routes
   server.on("/", handleRoot);
@@ -69,86 +90,68 @@ void setup() {
 void loop() {
   server.handleClient();
   
-  // If we have a valid GUID, check tally status periodically
-  if (guid.length() > 0 && WiFi.status() == WL_CONNECTED && (millis() - lastRequestTime >= requestInterval)) {
+  // Constantly update LEDs (handles animations without blocking)
+  updateLEDs();
+  
+  // Only poll vMix if we are connected to a network and have a valid IP/GUID
+  if (!isAPMode && guid.length() > 0 && vmix_ip.length() > 0 && (millis() - lastRequestTime >= requestInterval)) {
     lastRequestTime = millis();
     checkTallyStatus();
   }
 }
 
-// Load stored settings from EEPROM
-void loadConfig() {
-  vmix_ip = readStringFromEEPROM(VMIX_IP_ADDR);
-  guid = readStringFromEEPROM(GUID_ADDR);
+// --- LED State Machine & Animations ---
 
-  if (vmix_ip.length() == 0) vmix_ip = "127.0.0.1:8088"; // Default
-  if (guid.length() > 0) Serial.println("Loaded GUID: " + guid);
-}
-
-// Save updated values to EEPROM
-void saveConfig(String newIp, String newGuid) {
-  writeStringToEEPROM(VMIX_IP_ADDR, newIp);
-  writeStringToEEPROM(GUID_ADDR, newGuid);
-  EEPROM.commit();
-  guid = newGuid;
-  Serial.println("Config saved!");
-}
-
-// Web Configuration Page
-void handleRoot() {
-String html = "<html>\
-<head>\
-  <title>vMix Config</title>\
-  <style>\
-    * { text-align: center; font-family: sans-serif; color: white; }\
-    h1 { text-align: center; }\
-    #container { border: solid 2px black; border-radius: 20px; border-color: rgb(139, 31, 189); width: 35%; padding: 10px; display: flex; flex-direction: column; gap: 5px; }\
-    body { display: flex; align-items: center; justify-content: center; height: 100vh; background-color: rgb(48, 48, 48); }\
-    #save { width: 25%; padding: 5px; background-color: blueviolet; border-radius: 5px; border: 1px; transition: 0.4s; }\
-    #save:hover { background-color: rgb(112, 23, 196); transition: 0.4s; }\
-    .input { margin: 5px; color: black; width: 80%; }\
-    .form { display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; }\
-  </style>\
-</head>\
-<body>\
-  <div id=\"container\">\
-    <h1>ESP8266 vMix Configuration</h1>\
-    <form action=\"/save\" class=\"form\" method=\"GET\">\
-      <label for=\"vmix_ip\">vMix IP:</label>\
-      <input class=\"input\" type=\"text\" id=\"vmix_ip\" name=\"vmix_ip\" value=\"" + vmix_ip + "\">\
-      <label for=\"guid\">GUID:</label>\
-      <input class=\"input\" type=\"text\" id=\"guid\" name=\"guid\" value=\"" + guid + "\">\
-      <input type=\"submit\" value=\"Save\" id=\"save\" />\
-    </form>\
-  </div>\
-</body>\
-</html>";
-  server.send(200, "text/html", html);
-}
-
-// Handle Save Request
-void handleSave() {
-  if (server.hasArg("vmix_ip") && server.hasArg("guid")) {
-    vmix_ip = server.arg("vmix_ip");
-    guid = server.arg("guid");
-    saveConfig(vmix_ip, guid); // Save to EEPROM
-    server.send(200, "text/html", "<html>\
-  <head>\
-    <style>\
-      * { text-align: center; font-family: sans-serif; color: white; }\
-      body { background-color: rgb(48, 48, 48); height: 100vh; display: flex; align-items: center; justify-content: center; }\
-    </style>\
-  </head>\
-  <body>\
-    <h1>Configuration Updated! :)</h1><br>\
-  </body>\
-</html>");
-  } else {
-    server.send(400, "text/html", "Missing parameters!");
+void updateLEDs() {
+  unsigned long t = millis();
+  
+  switch (currentState) {
+    case STATE_BOOTING: {
+      // Slow fade blank to yellow
+      float intensity = (cos(t * 3.14159 / 1000.0) + 1.0) / 2.0;
+      setColor(255 * intensity, 127 * intensity, 0);
+      break;
+    }
+    case STATE_AP_MODE: {
+      // 3 Blink Blue Loop (2-second total cycle)
+      int cycle = t % 2000;
+      if (cycle < 150 || (cycle > 300 && cycle < 450) || (cycle > 600 && cycle < 750)) {
+        setColor(0, 0, 255); // Blue
+      } else {
+        setColor(0, 0, 0);   // Blank
+      }
+      break;
+    }
+    case STATE_NO_VMIX: {
+      // 3 Blink Yellow Loop (2-second total cycle)
+      int cycle = t % 2000;
+      if (cycle < 150 || (cycle > 300 && cycle < 450) || (cycle > 600 && cycle < 750)) {
+        setColor(255, 127, 0); // Yellow
+      } else {
+        setColor(0, 0, 0);     // Blank
+      }
+      break;
+    }
+    case STATE_OFF_AIR:
+      setColor(0, 0, 127); // Solid dim blue
+      break;
+    case STATE_PREVIEW:
+      setColor(255, 127, 0); // Solid yellow
+      break;
+    case STATE_PROGRAM:
+      setColor(255, 0, 0); // Solid red
+      break;
   }
 }
 
-// Query vMix for tally status
+void setColor(int red, int green, int blue) {
+  analogWrite(RED_PIN, red);
+  analogWrite(GREEN_PIN, green);
+  analogWrite(BLUE_PIN, blue);
+}
+
+// --- Tally Logic ---
+
 void checkTallyStatus() {
   WiFiClient client;
   HTTPClient http;
@@ -160,47 +163,99 @@ void checkTallyStatus() {
   if (httpCode > 0) {
     String payload = http.getString();
     parseTallyStatus(payload);
-    Serial.println("Tally Status: " + payload);
   } else {
     Serial.println("HTTP Error: " + http.errorToString(httpCode));
+    currentState = STATE_NO_VMIX; // Fallback to error blink if vMix drops
   }
   http.end();
 }
 
-// Analyze vMix tally response
 void parseTallyStatus(String payload) {
-  bool inPreview = (payload.indexOf(PrvColor) != -1);
-  bool inProgram = (payload.indexOf(PgmColor) != -1);
-
-  if (inProgram) {
-    setColor(255, 0, 0);   // Red for Program
-  } else if (inPreview) {
-    setColor(255, 127, 0); // Yellow for Preview
+  // Update state rather than setting colors directly
+  if (payload.indexOf(PGM_COLOR) != -1) {
+    currentState = STATE_PROGRAM;
+  } else if (payload.indexOf(PRV_COLOR) != -1) {
+    currentState = STATE_PREVIEW;
   } else {
-    setColor(0, 0, 127);   // Blue for Off
+    currentState = STATE_OFF_AIR;
   }
 }
 
-// Set LED color
-void setColor(int red, int green, int blue) {
-  analogWrite(redPin, red);
-  analogWrite(greenPin, green);
-  analogWrite(bluePin, blue);
+// --- EEPROM Management ---
+
+void loadConfig() {
+  wifi_ssid = readEEPROMString(EEPROM_SSID_ADDR, EEPROM_SSID_LEN);
+  wifi_pass = readEEPROMString(EEPROM_PASS_ADDR, EEPROM_PASS_LEN);
+  vmix_ip   = readEEPROMString(EEPROM_VMIX_IP_ADDR, EEPROM_VMIX_IP_LEN);
+  guid      = readEEPROMString(EEPROM_GUID_ADDR, EEPROM_GUID_LEN);
 }
 
-// EEPROM Helper Functions
-String readStringFromEEPROM(int address) {
+void saveConfig() {
+  writeEEPROMString(EEPROM_SSID_ADDR, EEPROM_SSID_LEN, wifi_ssid);
+  writeEEPROMString(EEPROM_PASS_ADDR, EEPROM_PASS_LEN, wifi_pass);
+  writeEEPROMString(EEPROM_VMIX_IP_ADDR, EEPROM_VMIX_IP_LEN, vmix_ip);
+  writeEEPROMString(EEPROM_GUID_ADDR, EEPROM_GUID_LEN, guid);
+  EEPROM.commit();
+  Serial.println("Config saved to EEPROM!");
+}
+
+String readEEPROMString(int start, int maxLength) {
   String value = "";
-  for (int i = address; i < address + 40; i++) {
-    char c = EEPROM.read(i);
-    if (c == '\0') break;
+  for (int i = 0; i < maxLength; i++) {
+    char c = EEPROM.read(start + i);
+    if (c == '\0' || c == 255) break; 
     value += c;
   }
   return value;
 }
 
-void writeStringToEEPROM(int address, String value) {
-  for (int i = address; i < address + 40; i++) {
-    EEPROM.write(i, (i - address < value.length()) ? value[i - address] : '\0');
+void writeEEPROMString(int start, int maxLength, String value) {
+  for (int i = 0; i < maxLength; i++) {
+    if (i < value.length()) {
+      EEPROM.write(start + i, value[i]);
+    } else {
+      EEPROM.write(start + i, '\0');
+    }
   }
+}
+
+// --- Web Interface ---
+
+void handleRoot() {
+  String html = "<html><head><title>Tally Config</title><style>";
+  html += "* { text-align: center; font-family: sans-serif; color: white; }";
+  html += "body { display: flex; align-items: center; justify-content: center; height: 100vh; background-color: #303030; }";
+  html += "#container { border: solid 2px #8b1fbd; border-radius: 20px; width: 350px; padding: 20px; background: #222; }";
+  html += ".input { margin-bottom: 15px; color: black; width: 90%; padding: 5px; }";
+  html += "#save { width: 100%; padding: 10px; background-color: blueviolet; border-radius: 5px; border: none; cursor: pointer; }";
+  html += "#save:hover { background-color: #7017c4; }";
+  html += "</style></head><body><div id='container'><h1>Tally Configuration</h1>";
+  
+  if (isAPMode) {
+    html += "<p style='color: yellow;'>Currently in AP Setup Mode</p>";
+  }
+
+  html += "<form action='/save' method='GET'>";
+  html += "<label>WiFi SSID:</label><br><input class='input' type='text' name='ssid' value='" + wifi_ssid + "'><br>";
+  html += "<label>WiFi Password:</label><br><input class='input' type='password' name='pass' value='" + wifi_pass + "'><br>";
+  html += "<label>vMix IP (e.g. 192.168.1.50:8088):</label><br><input class='input' type='text' name='vmix_ip' value='" + vmix_ip + "'><br>";
+  html += "<label>Input Name or GUID:</label><br><input class='input' type='text' name='guid' value='" + guid + "'><br>";
+  html += "<input type='submit' value='Save & Reboot' id='save'>";
+  html += "</form></div></body></html>";
+  
+  server.send(200, "text/html", html);
+}
+
+void handleSave() {
+  if (server.hasArg("ssid")) wifi_ssid = server.arg("ssid");
+  if (server.hasArg("pass")) wifi_pass = server.arg("pass");
+  if (server.hasArg("vmix_ip")) vmix_ip = server.arg("vmix_ip");
+  if (server.hasArg("guid")) guid = server.arg("guid");
+  
+  saveConfig(); 
+  
+  server.send(200, "text/html", "<html><body style='background-color:#303030; color:white; text-align:center; font-family:sans-serif;'><h1>Saved! Rebooting...</h1></body></html>");
+  
+  delay(1000);
+  ESP.restart(); 
 }

@@ -1,18 +1,34 @@
-//Variables for you to change!
+#ifndef CONFIG_H
+#define CONFIG_H
 
-const char* ssid = "MyCoolAP"; // Replace with your WiFi SSID
-const char* password = "MySecurePassword"; // Replace with your WiFi password
-const char* vmix_ip = "192.168.1.128:8088"; // Replace with your vMix IP address WITH Port
-const String input = "b681a619-1468-452c-89ea-feebec33c0db"; // You can use either the Input Number or the GUID. So cool!
+// --- Hardware Setup ---
+const int RED_PIN   = 5;
+const int GREEN_PIN = 4;
+const int BLUE_PIN  = 0;
 
-const int redPin = 5; //Pin Number for the Red Pin
-const int greenPin = 4; //Pin Number for the Green Pin
-const int bluePin = 0; //Pin Number for the Blue Pin
+// The network the ESP will create if it cannot find a known WiFi network
+const char* AP_SSID = "Tally-Setup";
+const char* AP_PASS = "admin123";
 
-//Change the below boolean to "true" to use a StaticIP
+// --- vMix Tally Colors ---
+const char* PRV_COLOR = "#ff8c00";
+const char* PGM_COLOR = "#ff0000";
 
-bool useStaticIP = false;
+// --- EEPROM Memory Map ---
+// Total size allocated (increased to hold WiFi credentials)
+#define EEPROM_SIZE 512 
 
-IPAddress staticIP(192, 168, 1, 127); // Replace with your desired static IP
-IPAddress gateway(192, 168, 1, 1); // Replace with your network gateway
-IPAddress subnet(255, 255, 255, 0); // Replace with your network subnet mask
+// Starting addresses and max lengths for each stored variable
+#define EEPROM_SSID_ADDR 0
+#define EEPROM_SSID_LEN  32
+
+#define EEPROM_PASS_ADDR 32
+#define EEPROM_PASS_LEN  64
+
+#define EEPROM_VMIX_IP_ADDR 100
+#define EEPROM_VMIX_IP_LEN  32
+
+#define EEPROM_GUID_ADDR 140
+#define EEPROM_GUID_LEN  40
+
+#endif
