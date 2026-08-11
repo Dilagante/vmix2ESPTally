@@ -3,26 +3,28 @@
 #include <ESP8266WebServer.h>
 #include <EEPROM.h>
 #include <ESP8266mDNS.h>
+#include <WiFiClient.h>
 #include "config.h"
 
 // Runtime Variables (Loaded from EEPROM)
 String wifi_ssid = "";
 String wifi_pass = "";
 String vmix_ip = "";
-String guid = "";
+String inputID = "";
 
 String static_ip = "";
 String static_gw = "";
 String static_sn = "";
 bool use_dhcp = true;
 
-String mdns_hostname = "tally"; //Default mDNS hostname for the device, can be changed in WebUI
+String mdns_hostname = "tally"; // Default mDNS hostname for the device, can be changed in WebUI
 
 // Web server
 ESP8266WebServer server(80);
+WiFiClient vmixClient;
 
-unsigned long lastRequestTime = 0;
-const unsigned long requestInterval = 300;
+unsigned long lastReconnectAttempt = 0;
+const unsigned long reconnectInterval = 3000;
 bool isAPMode = false;
 
 // --- Device States ---
@@ -107,7 +109,8 @@ void setup()
   {
     Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
     currentState = STATE_NO_VMIX;
-    if (MDNS.begin(mdns_hostname.c_str())) {
+    if (MDNS.begin(mdns_hostname.c_str()))
+    {
       Serial.println("mDNS responder started: http://" + mdns_hostname + ".local");
     }
   }
@@ -116,22 +119,75 @@ void setup()
   server.on("/", handleRoot);
   server.on("/save", handleSave);
   server.begin();
-  Serial.println("HTTP Server Started");
 }
 
 void loop()
 {
-  MDNS.update();
+  if (!isAPMode)
+    MDNS.update();
   server.handleClient();
 
   // Constantly update LEDs (handles animations without blocking)
   updateLEDs();
 
-  // Only poll vMix if we are connected to a network and have a valid IP/GUID
-  if (!isAPMode && guid.length() > 0 && vmix_ip.length() > 0 && (millis() - lastRequestTime >= requestInterval))
+  if (!isAPMode && inputID.length() > 0 && vmix_ip.length() > 0)
   {
-    lastRequestTime = millis();
-    checkTallyStatus();
+    handleTallyTCP();
+  }
+}
+
+void handleTallyTCP() {
+  // 1. Maintain Connection
+  if (!vmixClient.connected()) {
+    if (currentState == STATE_OFF_AIR || currentState == STATE_PREVIEW || currentState == STATE_PROGRAM) {
+      currentState = STATE_NO_VMIX; // Set to error blink if we lose connection
+    }
+    
+    if (millis() - lastReconnectAttempt > reconnectInterval) {
+      lastReconnectAttempt = millis();
+      
+      // Strip port if the user accidentally included ":8088" in the web UI
+      String clean_ip = vmix_ip;
+      int colonIdx = clean_ip.indexOf(':');
+      if (colonIdx > 0) clean_ip = clean_ip.substring(0, colonIdx);
+      
+      Serial.print("Connecting to vMix TCP at ");
+      Serial.println(clean_ip);
+      
+      if (vmixClient.connect(clean_ip.c_str(), 8099)) {
+        Serial.println("Connected to vMix TCP!");
+        vmixClient.println("SUBSCRIBE TALLY");
+        currentState = STATE_OFF_AIR; // Default state until vMix pushes data
+      }
+    }
+    return; // Stop here if not connected
+  }
+  
+  // 2. Read Incoming Push Data
+  while (vmixClient.available()) {
+    String line = vmixClient.readStringUntil('\n');
+    line.trim(); // Remove carriage return
+    
+    // Check if the message is a tally update
+    if (line.startsWith("TALLY OK ")) {
+      String tallyData = line.substring(9);
+      
+      // Convert user input (e.g., "1") to an array index (0-based)
+      int inputIdx = inputID.toInt() - 1; 
+      
+      // Ensure the requested input exists in the tally string
+      if (inputIdx >= 0 && inputIdx < tallyData.length()) {
+        char status = tallyData.charAt(inputIdx);
+        
+        if (status == '1') {
+          currentState = STATE_PROGRAM;
+        } else if (status == '2') {
+          currentState = STATE_PREVIEW;
+        } else {
+          currentState = STATE_OFF_AIR;
+        }
+      }
+    }
   }
 }
 
@@ -197,47 +253,6 @@ void setColor(int red, int green, int blue)
   analogWrite(BLUE_PIN, blue);
 }
 
-// --- Tally Logic ---
-
-void checkTallyStatus()
-{
-  WiFiClient client;
-  HTTPClient http;
-  String url = "http://" + vmix_ip + "/tallyupdate/?key=" + guid;
-
-  http.begin(client, url);
-  int httpCode = http.GET();
-
-  if (httpCode > 0)
-  {
-    String payload = http.getString();
-    parseTallyStatus(payload);
-  }
-  else
-  {
-    Serial.println("HTTP Error: " + http.errorToString(httpCode));
-    currentState = STATE_NO_VMIX; // Fallback to error blink if vMix drops
-  }
-  http.end();
-}
-
-void parseTallyStatus(String payload)
-{
-  // Update state rather than setting colors directly
-  if (payload.indexOf(PGM_COLOR) != -1)
-  {
-    currentState = STATE_PROGRAM;
-  }
-  else if (payload.indexOf(PRV_COLOR) != -1)
-  {
-    currentState = STATE_PREVIEW;
-  }
-  else
-  {
-    currentState = STATE_OFF_AIR;
-  }
-}
-
 // --- EEPROM Management ---
 
 void loadConfig()
@@ -245,14 +260,15 @@ void loadConfig()
   wifi_ssid = readEEPROMString(EEPROM_SSID_ADDR, EEPROM_SSID_LEN);
   wifi_pass = readEEPROMString(EEPROM_PASS_ADDR, EEPROM_PASS_LEN);
   vmix_ip = readEEPROMString(EEPROM_VMIX_IP_ADDR, EEPROM_VMIX_IP_LEN);
-  guid = readEEPROMString(EEPROM_GUID_ADDR, EEPROM_GUID_LEN);
+  inputID = readEEPROMString(EEPROM_INPUTID_ADDR, EEPROM_INPUTID_LEN);
   static_ip = readEEPROMString(EEPROM_STATIC_IP_ADDR, EEPROM_STATIC_IP_LEN);
   static_gw = readEEPROMString(EEPROM_STATIC_GW_ADDR, EEPROM_STATIC_GW_LEN);
   static_sn = readEEPROMString(EEPROM_STATIC_SN_ADDR, EEPROM_STATIC_SN_LEN);
   String dhcpFlag = readEEPROMString(EEPROM_USE_DHCP_ADDR, EEPROM_USE_DHCP_LEN);
   use_dhcp = (dhcpFlag == "0") ? false : true; // Default to true if empty
   mdns_hostname = readEEPROMString(EEPROM_HOSTNAME_ADDR, EEPROM_HOSTNAME_LEN);
-  if (mdns_hostname.length() == 0) mdns_hostname = "tally"; // Set default if empty
+  if (mdns_hostname.length() == 0)
+    mdns_hostname = "tally"; // Set default if empty
 }
 
 void saveConfig()
@@ -260,7 +276,7 @@ void saveConfig()
   writeEEPROMString(EEPROM_SSID_ADDR, EEPROM_SSID_LEN, wifi_ssid);
   writeEEPROMString(EEPROM_PASS_ADDR, EEPROM_PASS_LEN, wifi_pass);
   writeEEPROMString(EEPROM_VMIX_IP_ADDR, EEPROM_VMIX_IP_LEN, vmix_ip);
-  writeEEPROMString(EEPROM_GUID_ADDR, EEPROM_GUID_LEN, guid);
+  writeEEPROMString(EEPROM_INPUTID_ADDR, EEPROM_INPUTID_LEN, inputID);
   writeEEPROMString(EEPROM_STATIC_IP_ADDR, EEPROM_STATIC_IP_LEN, static_ip);
   writeEEPROMString(EEPROM_STATIC_GW_ADDR, EEPROM_STATIC_GW_LEN, static_gw);
   writeEEPROMString(EEPROM_STATIC_SN_ADDR, EEPROM_STATIC_SN_LEN, static_sn);
@@ -300,7 +316,8 @@ void writeEEPROMString(int start, int maxLength, String value)
 
 // --- Web Interface ---
 
-void handleRoot() {
+void handleRoot()
+{
   String html = "<html><head><title>Tally Config</title><style>";
   html += "* { text-align: center; font-family: sans-serif; color: white; }";
   html += "body { display: flex; align-items: center; justify-content: center; height: 100vh; background-color: #303030; margin: 0; }";
@@ -311,8 +328,9 @@ void handleRoot() {
   html += "</style>";
   html += "<script>function toggleStatic(cb) { document.getElementById('static_settings').style.display = cb.checked ? 'none' : 'block'; }</script>";
   html += "</head><body><div id='container'><h1>Tally Configuration</h1>";
-  
-  if (isAPMode) html += "<p style='color: yellow;'>Currently in AP Setup Mode</p>";
+
+  if (isAPMode)
+    html += "<p style='color: yellow;'>Currently in AP Setup Mode</p>";
 
   html += "<form action='/save' method='GET'>";
   html += "<label>WiFi SSID:</label><br><input class='input' type='text' name='ssid' value='" + wifi_ssid + "'><br>";
@@ -320,11 +338,11 @@ void handleRoot() {
   html += "<label>Device Name (mDNS):</label><br><input class='input' type='text' name='mdns_hostname' value='" + mdns_hostname + "'><br>";
   html += "<p style='font-size: 12px; margin-top: -10px;'>Access at: http://" + mdns_hostname + ".local</p>";
   html += "<label>vMix IP (e.g. 192.168.1.50:8088):</label><br><input class='input' type='text' name='vmix_ip' value='" + vmix_ip + "'><br>";
-  html += "<label>Input Name or GUID:</label><br><input class='input' type='text' name='guid' value='" + guid + "'><br><hr>";
-  
+  html += "<label>Input Number:</label><br><input class='input' type='text' name='inputID' value='" + inputID + "'><br><hr>";
+
   String checked = use_dhcp ? "checked" : "";
   String display = use_dhcp ? "none" : "block";
-  
+
   html += "<div style='margin-bottom: 10px;'><label>Use DHCP:</label> <input type='checkbox' name='use_dhcp' value='1' onchange='toggleStatic(this)' " + checked + "></div>";
   html += "<div id='static_settings' style='display:" + display + ";'>";
   html += "<label>Static IP:</label><br><input class='input' type='text' name='static_ip' value='" + static_ip + "'><br>";
@@ -334,29 +352,38 @@ void handleRoot() {
 
   html += "<input type='submit' value='Save & Reboot' id='save'>";
   html += "</form></div></body></html>";
-  
+
   server.send(200, "text/html", html);
 }
 
-void handleSave() {
-  if (server.hasArg("ssid")) wifi_ssid = server.arg("ssid");
-  if (server.hasArg("pass")) wifi_pass = server.arg("pass");
-  if (server.hasArg("vmix_ip")) vmix_ip = server.arg("vmix_ip");
-  if (server.hasArg("guid")) guid = server.arg("guid");
-  
+void handleSave()
+{
+  if (server.hasArg("ssid"))
+    wifi_ssid = server.arg("ssid");
+  if (server.hasArg("pass"))
+    wifi_pass = server.arg("pass");
+  if (server.hasArg("vmix_ip"))
+    vmix_ip = server.arg("vmix_ip");
+  if (server.hasArg("inputID"))
+    inputID = server.arg("inputID");
+
   // A checkbox only sends a value if it is checked
   use_dhcp = server.hasArg("use_dhcp");
-  
-  if (server.hasArg("static_ip")) static_ip = server.arg("static_ip");
-  if (server.hasArg("static_gw")) static_gw = server.arg("static_gw");
-  if (server.hasArg("static_sn")) static_sn = server.arg("static_sn");
 
-  if (server.hasArg("mdns_hostname")) mdns_hostname = server.arg("mdns_hostname");
-  
-  saveConfig(); 
-  
+  if (server.hasArg("static_ip"))
+    static_ip = server.arg("static_ip");
+  if (server.hasArg("static_gw"))
+    static_gw = server.arg("static_gw");
+  if (server.hasArg("static_sn"))
+    static_sn = server.arg("static_sn");
+
+  if (server.hasArg("mdns_hostname"))
+    mdns_hostname = server.arg("mdns_hostname");
+
+  saveConfig();
+
   server.send(200, "text/html", "<html><body style='background-color:#303030; color:white; text-align:center; font-family:sans-serif;'><h1>Saved! Rebooting...</h1></body></html>");
-  
+
   delay(1000);
-  ESP.restart(); 
+  ESP.restart();
 }
