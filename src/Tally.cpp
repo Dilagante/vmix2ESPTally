@@ -5,7 +5,7 @@
 #include <WiFiClient.h>
 #include "config.h"
 
-// Runtime Variables (Loaded from EEPROM)
+// Runtime Variables (Loaded from EEPROM) Can be changed through WEBUI and committed to EEPROM
 String wifi_ssid = "";
 String wifi_pass = "";
 String vmix_ip = "";
@@ -16,17 +16,19 @@ String static_gw = "";
 String static_sn = "";
 bool use_dhcp = true;
 
-String mdns_hostname = "tally"; // Default mDNS hostname for the device, can be changed in WebUI
+String mdns_hostname = "tally"; // Default mDNS hostname
 
-// Web server
+// Web server settings
 ESP8266WebServer server(80);
 WiFiClient vmixClient;
 
+// Connection delay settings
 unsigned long lastReconnectAttempt = 0;
 const unsigned long reconnectInterval = 3000;
+
 bool isAPMode = false;
 
-// --- Device States ---
+// Device States
 enum TallyState
 {
   STATE_BOOTING,
@@ -37,13 +39,14 @@ enum TallyState
   STATE_PROGRAM
 };
 
+// Set Default State
 TallyState currentState = STATE_BOOTING;
 
 void setup()
 {
   Serial.begin(115200);
 
-  // Set standard PWM range for ESP8266 (0-255)
+  // Set standard PWM range for ESP8266
   analogWriteRange(255);
 
   // Initialize EEPROM and Load Config
@@ -83,8 +86,8 @@ void setup()
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 200)
     {
-      updateLEDs(); // Keep the fade animation running
-      delay(50);    // Small delay prevents hardware watchdog reset while keeping fade smooth
+      updateLEDs();
+      delay(50);
       if (attempts % 10 == 0)
         Serial.print(".");
       attempts++;
@@ -107,6 +110,7 @@ void setup()
   else
   {
     Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
+    // Set state to Connected but no vMix
     currentState = STATE_NO_VMIX;
     if (MDNS.begin(mdns_hostname.c_str()))
     {
@@ -122,6 +126,7 @@ void setup()
 
 void loop()
 {
+  // Constantly listen for mDNS requests
   if (!isAPMode)
     MDNS.update();
   server.handleClient();
@@ -129,6 +134,7 @@ void loop()
   // Constantly update LEDs (handles animations without blocking)
   updateLEDs();
 
+  // Constantly handle TCP
   if (!isAPMode && inputID.length() > 0 && vmix_ip.length() > 0)
   {
     handleTallyTCP();
@@ -136,7 +142,7 @@ void loop()
 }
 
 void handleTallyTCP() {
-  // 1. Maintain Connection
+  // Maintain Connection if not connected
   if (!vmixClient.connected()) {
     if (currentState == STATE_OFF_AIR || currentState == STATE_PREVIEW || currentState == STATE_PROGRAM) {
       currentState = STATE_NO_VMIX; // Set to error blink if we lose connection
@@ -190,24 +196,23 @@ void handleTallyTCP() {
   }
 }
 
-// --- LED State Machine & Animations ---
-
+// LED State Machine & Animations
 void updateLEDs()
 {
   unsigned long t = millis();
 
   switch (currentState)
   {
+  // Booting: Slow yellow fade loop
   case STATE_BOOTING:
   {
-    // Slow fade blank to yellow
     float intensity = (cos(t * 3.14159 / 1000.0) + 1.0) / 2.0;
     setColor(255 * intensity, 127 * intensity, 0);
     break;
   }
+  // AP Mode: 3 Blink Blue Loop
   case STATE_AP_MODE:
   {
-    // 3 Blink Blue Loop (2-second total cycle)
     int cycle = t % 2000;
     if (cycle < 150 || (cycle > 300 && cycle < 450) || (cycle > 600 && cycle < 750))
     {
@@ -219,9 +224,9 @@ void updateLEDs()
     }
     break;
   }
+  // Connected, no vmix: 3 Blink Yellow Loop
   case STATE_NO_VMIX:
   {
-    // 3 Blink Yellow Loop (2-second total cycle)
     int cycle = t % 2000;
     if (cycle < 150 || (cycle > 300 && cycle < 450) || (cycle > 600 && cycle < 750))
     {
@@ -233,18 +238,22 @@ void updateLEDs()
     }
     break;
   }
+  // Connected, Off Air: Blue
   case STATE_OFF_AIR:
-    setColor(0, 0, 127); // Solid dim blue
+    setColor(0, 0, 127);
     break;
+  // Connected, Preview: Yellow
   case STATE_PREVIEW:
-    setColor(255, 127, 0); // Solid yellow
+    setColor(255, 127, 0);
     break;
+  // Connected, Program: Red
   case STATE_PROGRAM:
-    setColor(255, 0, 0); // Solid red
+    setColor(255, 0, 0);
     break;
   }
 }
 
+// Helper function: Set Color
 void setColor(int red, int green, int blue)
 {
   analogWrite(RED_PIN, red);
@@ -252,7 +261,7 @@ void setColor(int red, int green, int blue)
   analogWrite(BLUE_PIN, blue);
 }
 
-// --- EEPROM Management ---
+// EEPROM Management
 
 void loadConfig()
 {
@@ -313,7 +322,7 @@ void writeEEPROMString(int start, int maxLength, String value)
   }
 }
 
-// --- Web Interface ---
+// Web Interface
 
 void handleRoot()
 {
@@ -366,7 +375,6 @@ void handleSave()
   if (server.hasArg("inputID"))
     inputID = server.arg("inputID");
 
-  // A checkbox only sends a value if it is checked
   use_dhcp = server.hasArg("use_dhcp");
 
   if (server.hasArg("static_ip"))
