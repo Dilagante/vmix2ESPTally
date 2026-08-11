@@ -109,7 +109,7 @@ git  clone  https://github.com/Dilagante/vmix2ESPTally
 
   
 
-![Wiring Diagram](https://github.com/Dilagante/vmix2ESPTally/blob/master/Tally_Client_Schematic_v2.png)
+![Wiring Diagram](./assets/Tally_Client_Schematic_v2.png)
 
   
 
@@ -194,4 +194,4 @@ SOFTWARE.
   
   
 
-![My cat](https://github.com/Dilagante/vmix2ESPTally/blob/master/Cat.jpg)
+![My cat](./assets/Cat.jpg)
