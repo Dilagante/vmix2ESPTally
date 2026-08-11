@@ -43,4 +43,7 @@ const char* PGM_COLOR = "#ff0000";
 #define EEPROM_USE_DHCP_ADDR  228
 #define EEPROM_USE_DHCP_LEN   2
 
+#define EEPROM_HOSTNAME_ADDR 230
+#define EEPROM_HOSTNAME_LEN  32
+
 #endif

@@ -2,6 +2,7 @@
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <EEPROM.h>
+#include <ESP8266mDNS.h>
 #include "config.h"
 
 // Runtime Variables (Loaded from EEPROM)
@@ -14,6 +15,8 @@ String static_ip = "";
 String static_gw = "";
 String static_sn = "";
 bool use_dhcp = true;
+
+String mdns_hostname = "tally"; //Default mDNS hostname for the device, can be changed in WebUI
 
 // Web server
 ESP8266WebServer server(80);
@@ -103,8 +106,10 @@ void setup()
   else
   {
     Serial.println("\nWiFi Connected! IP: " + WiFi.localIP().toString());
-    // Default to NO_VMIX until we get our first successful HTTP response
     currentState = STATE_NO_VMIX;
+    if (MDNS.begin(mdns_hostname.c_str())) {
+      Serial.println("mDNS responder started: http://" + mdns_hostname + ".local");
+    }
   }
 
   // Web Server Routes
@@ -116,6 +121,7 @@ void setup()
 
 void loop()
 {
+  MDNS.update();
   server.handleClient();
 
   // Constantly update LEDs (handles animations without blocking)
@@ -245,6 +251,8 @@ void loadConfig()
   static_sn = readEEPROMString(EEPROM_STATIC_SN_ADDR, EEPROM_STATIC_SN_LEN);
   String dhcpFlag = readEEPROMString(EEPROM_USE_DHCP_ADDR, EEPROM_USE_DHCP_LEN);
   use_dhcp = (dhcpFlag == "0") ? false : true; // Default to true if empty
+  mdns_hostname = readEEPROMString(EEPROM_HOSTNAME_ADDR, EEPROM_HOSTNAME_LEN);
+  if (mdns_hostname.length() == 0) mdns_hostname = "tally"; // Set default if empty
 }
 
 void saveConfig()
@@ -257,6 +265,7 @@ void saveConfig()
   writeEEPROMString(EEPROM_STATIC_GW_ADDR, EEPROM_STATIC_GW_LEN, static_gw);
   writeEEPROMString(EEPROM_STATIC_SN_ADDR, EEPROM_STATIC_SN_LEN, static_sn);
   writeEEPROMString(EEPROM_USE_DHCP_ADDR, EEPROM_USE_DHCP_LEN, use_dhcp ? "1" : "0");
+  writeEEPROMString(EEPROM_HOSTNAME_ADDR, EEPROM_HOSTNAME_LEN, mdns_hostname);
   EEPROM.commit();
   Serial.println("Config saved to EEPROM!");
 }
@@ -308,6 +317,8 @@ void handleRoot() {
   html += "<form action='/save' method='GET'>";
   html += "<label>WiFi SSID:</label><br><input class='input' type='text' name='ssid' value='" + wifi_ssid + "'><br>";
   html += "<label>WiFi Password:</label><br><input class='input' type='password' name='pass' value='" + wifi_pass + "'><br>";
+  html += "<label>Device Name (mDNS):</label><br><input class='input' type='text' name='mdns_hostname' value='" + mdns_hostname + "'><br>";
+  html += "<p style='font-size: 12px; margin-top: -10px;'>Access at: http://" + mdns_hostname + ".local</p>";
   html += "<label>vMix IP (e.g. 192.168.1.50:8088):</label><br><input class='input' type='text' name='vmix_ip' value='" + vmix_ip + "'><br>";
   html += "<label>Input Name or GUID:</label><br><input class='input' type='text' name='guid' value='" + guid + "'><br><hr>";
   
@@ -339,6 +350,8 @@ void handleSave() {
   if (server.hasArg("static_ip")) static_ip = server.arg("static_ip");
   if (server.hasArg("static_gw")) static_gw = server.arg("static_gw");
   if (server.hasArg("static_sn")) static_sn = server.arg("static_sn");
+
+  if (server.hasArg("mdns_hostname")) mdns_hostname = server.arg("mdns_hostname");
   
   saveConfig(); 
   
