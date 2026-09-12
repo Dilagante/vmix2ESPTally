@@ -42,6 +42,17 @@ enum TallyState
 // Set Default State
 TallyState currentState = STATE_BOOTING;
 
+// Forward declarations
+void loadConfig();
+void saveConfig();
+void updateLEDs();
+void setColor(int red, int green, int blue);
+void handleTallyTCP();
+String readEEPROMString(int start, int maxLength);
+void writeEEPROMString(int start, int maxLength, String value);
+void handleRoot();
+void handleSave();
+
 void setup()
 {
   Serial.begin(115200);
@@ -141,25 +152,31 @@ void loop()
   }
 }
 
-void handleTallyTCP() {
+void handleTallyTCP()
+{
   // Maintain Connection if not connected
-  if (!vmixClient.connected()) {
-    if (currentState == STATE_OFF_AIR || currentState == STATE_PREVIEW || currentState == STATE_PROGRAM) {
+  if (!vmixClient.connected())
+  {
+    if (currentState == STATE_OFF_AIR || currentState == STATE_PREVIEW || currentState == STATE_PROGRAM)
+    {
       currentState = STATE_NO_VMIX; // Set to error blink if we lose connection
     }
-    
-    if (millis() - lastReconnectAttempt > reconnectInterval) {
+
+    if (millis() - lastReconnectAttempt > reconnectInterval)
+    {
       lastReconnectAttempt = millis();
-      
+
       // Strip port if the user accidentally included ":8088" in the web UI
       String clean_ip = vmix_ip;
       int colonIdx = clean_ip.indexOf(':');
-      if (colonIdx > 0) clean_ip = clean_ip.substring(0, colonIdx);
-      
+      if (colonIdx > 0)
+        clean_ip = clean_ip.substring(0, colonIdx);
+
       Serial.print("Connecting to vMix TCP at ");
       Serial.println(clean_ip);
-      
-      if (vmixClient.connect(clean_ip.c_str(), 8099)) {
+
+      if (vmixClient.connect(clean_ip.c_str(), 8099))
+      {
         Serial.println("Connected to vMix TCP!");
         vmixClient.println("SUBSCRIBE TALLY");
         currentState = STATE_OFF_AIR; // Default state until vMix pushes data
@@ -167,28 +184,36 @@ void handleTallyTCP() {
     }
     return; // Stop here if not connected
   }
-  
+
   // 2. Read Incoming Push Data
-  while (vmixClient.available()) {
+  while (vmixClient.available())
+  {
     String line = vmixClient.readStringUntil('\n');
     line.trim(); // Remove carriage return
-    
+
     // Check if the message is a tally update
-    if (line.startsWith("TALLY OK ")) {
+    if (line.startsWith("TALLY OK "))
+    {
       String tallyData = line.substring(9);
-      
+
       // Convert user input (e.g., "1") to an array index (0-based)
-      int inputIdx = inputID.toInt() - 1; 
-      
+      int inputIdx = inputID.toInt() - 1;
+
       // Ensure the requested input exists in the tally string
-      if (inputIdx >= 0 && inputIdx < tallyData.length()) {
+      if (inputIdx >= 0 && inputIdx < (int)tallyData.length())
+      {
         char status = tallyData.charAt(inputIdx);
-        
-        if (status == '1') {
+
+        if (status == '1')
+        {
           currentState = STATE_PROGRAM;
-        } else if (status == '2') {
+        }
+        else if (status == '2')
+        {
           currentState = STATE_PREVIEW;
-        } else {
+        }
+        else
+        {
           currentState = STATE_OFF_AIR;
         }
       }
@@ -311,7 +336,7 @@ void writeEEPROMString(int start, int maxLength, String value)
 {
   for (int i = 0; i < maxLength; i++)
   {
-    if (i < value.length())
+    if (i < (int)value.length())
     {
       EEPROM.write(start + i, value[i]);
     }
